@@ -113,7 +113,7 @@ class RFMAnalyzer:
                 )
 
             # ---- 8. Final RFM Score ----
-            self.rfm["RFM_Score"] = (
+            self.rfm["rfm_score"] = (
                 self.rfm["recency_score"].astype(str)
                 + self.rfm["frequency_score"].astype(str)
                 + self.rfm["monetary_score"].astype(str)
@@ -137,7 +137,7 @@ class RFMAnalyzer:
             }
 
             # 3. Apply the rules using np.select
-            self.rfm['Segment'] = np.select(list(segment_conditions.values()), list(segment_conditions.keys()), default='Others')
+            self.rfm['segment'] = np.select(list(segment_conditions.values()), list(segment_conditions.keys()), default='Others')
 
         return self.rfm
 
@@ -149,7 +149,7 @@ class RFMAnalyzer:
         self.rfm.drop(columns=[
                 'last_order', 'period_end',
                 'recency', 'frequency', 'monetary',
-                'recency_score', 'frequency_score', 'monetary_score'
+                'recency_score', 'frequency_score', 'monetary_score',
                 ], inplace=True
         )
 
@@ -164,11 +164,16 @@ def rfm_analysis(data: DataFrame, type: str, freq: str = "all") -> DataFrame:
     :return: A pandas DataFrame with RFM scores for each customer.
     """
     analyzer = RFMAnalyzer(data=data, type=type, freq=freq)
+    rfm_result = analyzer.run()
 
-    return analyzer.run()
+    if freq == "all":
+        rfm_result.drop(columns=["period"], inplace=True)
+    return rfm_result
 
 if __name__ == "__main__":
+
     from utils.data_loader import DataLoader
     data = DataLoader().sample_data()
+
     rfm_result = rfm_analysis(data=data, type='classic', freq='all')
     print(rfm_result.head())
