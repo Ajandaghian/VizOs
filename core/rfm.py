@@ -9,20 +9,18 @@ from utils.helper_func import calendar_generator, rfm_custom_qcut
 
 
 
-#https://chatgpt.com/c/69179db2-bed4-8328-b4d4-d3ec4f74fd69
 
-# class RFMAnalyzer:
-#     - __init__(df, date_col, customer_col, amount_col)
-
-#     - make_periods(freq)                # ساخت بازه‌ها: M, Q, Y
-#     - calculate_rfm_per_period()        # محاسبه Recency, Frequency, Monetary
-#     - score_rfm(method="quantile")      # امتیازدهی RFM
-#     - assign_segments(segmentation="rfm_score")   # ساخت سگمنت نهایی
-#     - build_rfm_history()               # خروجی نهایی: جدول کامل تاریخچه RFM
-#     - transition_matrix()               # ماتریس ترنزیشن
-
-# start = df["order_date"].min().normalize()
-# end   = df["order_date"].max().normalize()
+AVAILABLE_TYPES = ['classic', 'weighted', 'kmeans',]
+AVAILABLE_FREQS = ['all', 'M', 'Q', 'Y']
+SEGMENTS_MAP = {
+    (4.5, 5.0): 'Champions',
+    (4.0, 4.49): 'Loyal',
+    (3.0, 3.99): 'Potential Loyalists',
+    (2.5, 2.99): 'Promising',
+    (2.0, 2.49): 'Needs Attention',
+    (1.5, 1.99): 'At Risk',
+    (1.0, 1.49): 'Lost'
+}
 
 
 class RFMAnalyzer:
@@ -30,24 +28,37 @@ class RFMAnalyzer:
     A class to perform RFM analysis on customer data.
     """
 
-    def __init__(self, data: DataFrame, type: str, freq: str = "all"):
-        """
+    def __init__(self, data: DataFrame, type: str = 'classic', freq: str = "all", weights: list = [0.33, 0.33, 0.34]):
+        f"""
         Initializes the RFMAnalyzer with customer data.
 
         :param data: A pandas DataFrame containing customer transaction data.
-        :param type: Type of RFM analysis ('classic', 'weighted', 'kmeans').
-        :param freq: Frequency for period grouping ('all', 'M', 'Q', 'Y').
+        :param type: Type of RFM analysis {AVAILABLE_TYPES}.
+        :param freq: Frequency for period grouping {AVAILABLE_FREQS}.
+        :param weights: Optional weights for weighted RFM analysis. in the order of (R, F, M). between 0 and 1. Sum must be 1.
         """
+
         self.data = data.copy()
         self.start = data["order_date"].min().normalize()
         self.end   = data["order_date"].max().normalize()
 
-        if type not in ['classic', 'weighted', 'kmeans',]:
-            raise ValueError("Type must be one of 'classic', 'weighted', or 'kmeans'")
+        if type not in AVAILABLE_TYPES:
+            raise ValueError(f"Type must be one of {AVAILABLE_TYPES}")
         self.type = type
-        if freq not in ['all', 'M', 'Q', 'Y']:
-            raise ValueError("freq must be one of 'all', 'M', 'Q', or 'Y'")
+
+        if freq not in AVAILABLE_FREQS:
+            raise ValueError(f"freq must be one of {AVAILABLE_FREQS}")
         self.freq = freq
+
+        if self.type == 'weighted':
+            if not weights:
+                raise ValueError("Weights must be provided for weighted RFM analysis.")
+            if len(weights) !=3:
+                raise ValueError("Weights must be a list of three values for R, F, and M respectively.")
+            if not np.isclose(sum(weights), 1.0):
+                raise ValueError("Weights must sum to 1.")
+        self.weights = weights
+
         self.rfm = pd.DataFrame()
 
     def _make_periods(self):
@@ -56,24 +67,13 @@ class RFMAnalyzer:
             self.data["period"] = "all"
             self.period_end = pd.DataFrame({"period": ["all"], "period_end": [self.end]})
 
-        elif self.freq in ["M", "Q", "Y"]:
-            self.data["period"] = self.data["order_date"].dt.to_period(self.freq)
-            self.period_end = (
-                calendar_generator(self.start, self.end).groupby(self.freq)["date"]
-                .max()
-                .rename("period_end")
-                .reset_index()
-                .rename(columns={self.freq: "period"})
-            )
-        else:
-            raise ValueError("freq must be 'all', 'M', 'Q', or 'Y'")
-
     def _compute_rfm_values(self):
         """
         Computes RFM metrics for all types of analysis.
         """
+        #--- Create periods ----
         self._make_periods()
-        period_end = self.period_end
+
         # ---- Aggregate: customer x period ----
         self.rfm = self.data.groupby(["customer_id", "period"]).agg(
             last_order=("order_date", "max"),
@@ -82,98 +82,102 @@ class RFMAnalyzer:
         ).reset_index()
 
         # ---- Attach correct period_end ----
-        self.rfm = self.rfm.merge(period_end, on="period", how="left")
+        self.rfm = self.rfm.merge(self.period_end, on="period", how="left")
 
         # ---- Recency calculation (always correct) ----
         self.rfm["recency"] = (self.rfm["period_end"] - self.rfm["last_order"]).dt.days
 
         return self.rfm
 
-    def assign_scores(self):
-        if self.type == 'classic':
-            # ---- Scoring inside each period ----
-            if self.freq == "all":
-                # One single group
-                self.rfm["recency_score"]   = rfm_custom_qcut(self.rfm["recency"],  labels=[5,4,3,2,1])
-                self.rfm["frequency_score"] = rfm_custom_qcut(self.rfm["frequency"],  labels=[1,2,3,4,5])
-                self.rfm["monetary_score"]  = rfm_custom_qcut(self.rfm["monetary"],  labels=[1,2,3,4,5])
-            else:
-                # Separate scoring for each period
-                self.rfm["recency_score"] = (
-                    self.rfm.groupby("period")["recency"]
-                    .transform(lambda x: rfm_custom_qcut(x,labels=[5,4,3,2,1]))
-                )
-                self.rfm["frequency_score"] = (
-                    self.rfm.groupby("period")["frequency"]
-                    .transform(lambda x: rfm_custom_qcut(x, labels=[1,2,3,4,5]))
-                )
-                self.rfm["monetary_score"] = (
-                    self.rfm.groupby("period")["monetary"]
-                    .transform(lambda x: rfm_custom_qcut(x, labels=[1,2,3,4,5]))
-                )
+    def _calculate_rfm_scores(self):
 
-            # ---- 8. Final RFM Score ----
-            self.rfm["rfm_score"] = (
-                self.rfm["recency_score"].astype(str)
-                + self.rfm["frequency_score"].astype(str)
-                + self.rfm["monetary_score"].astype(str)
+        # ---- Classic RFM Scoring ----
+        self.rfm['R_score'] = rfm_custom_qcut('recency', self.rfm['recency']).astype(int)
+        self.rfm['F_score'] = rfm_custom_qcut('frequency', self.rfm['frequency']).astype(int)
+        self.rfm['M_score'] = rfm_custom_qcut('monetary', self.rfm['monetary']).astype(int)
+
+        self.rfm['RFM_label'] = (
+            self.rfm['R_score'].astype(str) +
+            self.rfm['F_score'].astype(str) +
+            self.rfm['M_score'].astype(str)
+        )
+
+        if self.type == 'classic':
+            self.rfm['RFM_score'] = round(self.rfm[['R_score', 'F_score', 'M_score']].mean(axis=1), 1)
+
+        elif self.type == 'weighted':
+            R_weight, F_weight, M_weight = self.weights
+            self.rfm['RFM_score'] = round(
+                self.rfm['R_score'] * R_weight +
+                self.rfm['F_score'] * F_weight +
+                self.rfm['M_score'] * M_weight,
+                1
             )
 
-    def assign_segments(self):
-        if self.type == 'classic':
-            # 1. Define segments and their conditions in a dictionary
-            # The order of definition matters and determines the priority.
-            segment_conditions = {
-                'Champions': (self.rfm["recency"] >= 4) & (self.rfm['frequency'] >= 4) & (self.rfm['monetary'] >= 4),
-                'Loyal Customers': (self.rfm['recency'] >= 3) & (self.rfm['frequency'] >= 3) & (self.rfm['monetary'] >= 3),
-                'Potential Loyalists': (self.rfm['recency'] >= 3) & (self.rfm['frequency'] >= 2) & (self.rfm['monetary'] >= 2),
-                'New Customers': (self.rfm['recency'] >= 4) & (self.rfm['frequency'] == 1),
-                'At Risk': (self.rfm['recency'] <= 2) & (self.rfm['frequency'] >= 3) & (self.rfm['monetary'] >= 3),
-                'Customers Needing Attention': (self.rfm['recency'] >= 2) & (self.rfm['recency'] <= 3) &
-                                                (self.rfm['frequency'] >= 2) & (self.rfm['frequency'] <= 3) &
-                                                (self.rfm['monetary'] >= 2) & (self.rfm['monetary'] <= 3),
-                'About to Sleep': (self.rfm['recency'] >= 2) & (self.rfm['recency'] <= 3) & (self.rfm['frequency'] <= 2),
-                'Lost': (self.rfm['recency'] <= 2) & (self.rfm['frequency'] <= 2)
-            }
+    def _assign_segments(self):
 
-            # 3. Apply the rules using np.select
-            self.rfm['segment'] = np.select(list(segment_conditions.values()), list(segment_conditions.keys()), default='Others')
+        def map_segment(score):
+            for (low, high), segment in SEGMENTS_MAP.items():
+                if low <= score <= high:
+                    return segment
+            return 'Unknown'
+
+        self.rfm['Segment'] = self.rfm['RFM_score'].apply(map_segment)
+
+        #---- Final RFM DataFrame with clean columns ----
+        self.rfm = self.rfm[['customer_id', 'period', 'RFM_score', 'Segment']]
 
         return self.rfm
 
     def run(self):
+        """
+        Runs the complete RFM analysis pipeline.
+        """
         self._compute_rfm_values()
-        self.assign_scores()
-        self.assign_segments()
-
-        self.rfm.drop(columns=[
-                'last_order', 'period_end',
-                'recency', 'frequency', 'monetary',
-                'recency_score', 'frequency_score', 'monetary_score',
-                ], inplace=True
-        )
+        self._calculate_rfm_scores()
+        self._assign_segments()
 
         return self.rfm
 
-def rfm_analysis(data: DataFrame, type: str, freq: str = "all") -> DataFrame:
-    """
-    Performs RFM analysis on the provided customer data.
-    :param data: A pandas DataFrame containing customer transaction data.
-    :param type: Type of RFM analysis ('classic', 'weighted', 'kmeans').
-    :param freq: Frequency for period grouping ('all', 'M', 'Q', 'Y').
-    :return: A pandas DataFrame with RFM scores for each customer.
-    """
-    analyzer = RFMAnalyzer(data=data, type=type, freq=freq)
-    rfm_result = analyzer.run()
 
-    if freq == "all":
-        rfm_result.drop(columns=["period"], inplace=True)
+
+def rfm_analysis(data: DataFrame, type: str = 'classic', freq: str = "all", weights: list = None) -> DataFrame:
+    """
+    A convenience function to perform RFM analysis.
+
+    :param data: A pandas DataFrame containing customer transaction data.
+    :param type: Type of RFM analysis {AVAILABLE_TYPES}.
+    :param freq: Frequency for period grouping {AVAILABLE_FREQS}.
+    :return: A pandas DataFrame with RFM scores and segments.
+    """
+    rfm_analyzer = RFMAnalyzer(data, type=type, freq=freq, weights=weights if weights else [])
+    rfm_result = rfm_analyzer.run()
+
     return rfm_result
+
+
 
 if __name__ == "__main__":
 
     from utils.data_loader import DataLoader
     data = DataLoader().sample_data()
+    print(data.head())
+    print('---'*20)
 
-    rfm_result = rfm_analysis(data=data, type='classic', freq='all')
-    print(rfm_result.head())
+    rfm_class = RFMAnalyzer(data, type='classic', freq='all')
+    rfm_final = rfm_class.run()
+
+    print(rfm_final.head())
+    print('---'*20)
+
+    print('Weighted RFM Analysis:')
+    weights = [0.5, 0.3, 0.2]
+    rfm_weighted = RFMAnalyzer(data, type='weighted', freq='all', weights=weights)
+    rfm_final_weighted = rfm_weighted.run()
+
+    print(rfm_final_weighted.head())
+    print('---'*20)
+
+
+
+
