@@ -8,8 +8,6 @@ import pandas as pd
 from utils.helper_func import calendar_generator, rfm_custom_qcut
 
 
-
-
 AVAILABLE_TYPES = ['classic', 'weighted', 'kmeans',]
 AVAILABLE_FREQS = ['all', 'M', 'Q', 'Y']
 SEGMENTS_MAP = {
@@ -66,6 +64,17 @@ class RFMAnalyzer:
         if self.freq == "all":
             self.data["period"] = "all"
             self.period_end = pd.DataFrame({"period": ["all"], "period_end": [self.end]})
+
+        elif self.freq in ["M", "Q", "Y"]:
+            self.data["period"] = self.data["order_date"].dt.to_period(self.freq)
+
+            self.period_end = (
+                calendar_generator(self.start, self.end).groupby(self.freq)["date"]
+                .max()
+                .rename("period_end")
+                .reset_index()
+                .rename(columns={self.freq: "period"})
+            )
 
     def _compute_rfm_values(self):
         """
@@ -157,6 +166,13 @@ def rfm_analysis(data: DataFrame, type: str = 'classic', freq: str = "all", weig
 
 
 
+
+
+
+
+
+
+
 if __name__ == "__main__":
 
     from utils.data_loader import DataLoader
@@ -172,7 +188,7 @@ if __name__ == "__main__":
 
     print('Weighted RFM Analysis:')
     weights = [0.5, 0.3, 0.2]
-    rfm_weighted = RFMAnalyzer(data, type='weighted', freq='all', weights=weights)
+    rfm_weighted = RFMAnalyzer(data, type='weighted', freq='M', weights=weights)
     rfm_final_weighted = rfm_weighted.run()
 
     print(rfm_final_weighted.head())

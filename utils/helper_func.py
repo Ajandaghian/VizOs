@@ -32,7 +32,6 @@ def rfm_custom_qcut(col: str ,series: pd.Series):
     else:
         labels = [1,2,3,4,5]
 
-
     if series.nunique() < 2:
         return pd.Series(
                 # [labels[len(labels)//2]]
@@ -47,5 +46,4 @@ def rfm_custom_qcut(col: str ,series: pd.Series):
         return pd.cut(series, bins=bins, labels=labels[:len(bins)-1], include_lowest=True)
 
     else:
-        return pd.qcut(series, len(labels), labels=labels)
-
+        return pd.qcut(series, len(labels), labels=labels[:pd.qcut(series, len(labels), duplicates='drop').cat.categories.size], duplicates='drop')
